@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: route-optimizer
+    env: python
+    plan: pro  # Persistent Diskを使うためにはProプランが必要
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run main.py --server.port 10000
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10
+    disk:
+      name: persistent-db
+      mountPath: /mnt/data
+      sizeGB: 1

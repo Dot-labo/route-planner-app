@@ -1,0 +1,7 @@
+streamlit
+googlemaps
+pandas
+folium
+streamlit-folium
+streamlit-sortables
+ortools
