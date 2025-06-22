@@ -11,11 +11,12 @@ import sqlite3
 import pandas as pd
 
 st.set_page_config(layout="wide")
-st.title("お弁当配送ルート最適化アプリ")
+st.subheader("お弁当配送ルート最適化アプリ")
 
-# === SQLite データベース初期化 ===
+# === SQLite データベース初期化 ===ローカルとデプロイ時で切り替え必要
 #conn = sqlite3.connect("locations.db")
 conn = sqlite3.connect("/mnt/data/locations.db")
+
 c = conn.cursor()
 c.execute("""
     CREATE TABLE IF NOT EXISTS locations (
@@ -62,7 +63,7 @@ if page == "管理画面":
             st.error("GLUGインポート中にエラーが発生しました。")
             st.exception(e)
             
-    st.subheader("📋 配送先管理（出発地の編集）")
+    st.subheader("📋 配送先の編集")
     with st.form("add_form"):
         name = st.text_input("名称")
         address = st.text_input("住所")
@@ -210,73 +211,165 @@ def calc_distance(p1, p2):
 mode = st.radio("訪問順の設定方法を選択", ["①手動で変更", "②AIで自動最適化"], horizontal=True, index=1, key="route_mode")
 manual_mode = (mode == "①手動で変更")
 
-# === UI：ルート選択＋訪問対象選択 ===
-def run_auto_route_update(selected_names):
-    start_name = "出発地"
-    route_names = [start_name] + selected_names
-
-    if not route_names or len(route_names) < 2:
-        return
-
-    matrix = []
-    for from_name in route_names:
-        row = []
-        for to_name in route_names:
-            dist = 0 if from_name == to_name else int(calc_distance(from_name, to_name))
-            row.append(dist)
-        matrix.append(row)
-
-    manager = pywrapcp.RoutingIndexManager(len(matrix), 1, 0)
-    routing = pywrapcp.RoutingModel(manager)
-
-    def distance_callback(from_idx, to_idx):
-        return matrix[manager.IndexToNode(from_idx)][manager.IndexToNode(to_idx)]
-
-    transit_idx = routing.RegisterTransitCallback(distance_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_idx)
-
-    search_params = pywrapcp.DefaultRoutingSearchParameters()
-    search_params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-    solution = routing.SolveWithParameters(search_params)
-
-    if not solution:
-        return
-
-    index = routing.Start(0)
-    ordered_route = []
-    while not routing.IsEnd(index):
-        ordered_route.append(route_names[manager.IndexToNode(index)])
-        index = solution.Value(routing.NextVar(index))
-    ordered_route.append(route_names[manager.IndexToNode(index)])
-
-    total = 0
-    for i in range(len(ordered_route) - 1):
-        total += calc_distance(ordered_route[i], ordered_route[i + 1])
-
-    st.session_state["last_route"] = ordered_route
-    st.session_state["last_total_distance"] = total
-    st.session_state["ordered_names"] = [name for name in ordered_route if name != start_name]
-
-st.subheader("配送ルートを選択してください")
+# === フィルタ処理 ===
+st.subheader("配送ルートはサイドバーで選択（スマホ：左上の「>>」マーク）")
 fixed_routes = ["全項目", "A", "B①", "B②", "C", "D", "E", "F", "G", "その他"]
 selected_route = st.sidebar.selectbox("🚚 配送ルートを選択", fixed_routes, key="route_filter")
+# 本体側に遷移したことを明示（選択後に表示）
+st.write(f"✅ 「{selected_route}」ルートを選択しました")
 
-# === ルートでフィルタリングした地点 ===
 filtered_locations = {
     name: info for name, info in locations.items()
-    if name != start_name and (selected_route == "全項目" or info["route"] == selected_route)
+    if name != "出発地" and (selected_route == "全項目" or info["route"] == selected_route)
 }
 
 if not filtered_locations:
     st.warning("このルートには対象施設がありません。")
     st.stop()
 
-# === チェック状態管理 ===
-if "school_check_states" not in st.session_state:
-    st.session_state["school_check_states"] = {name: True for name in filtered_locations}
+# 🚀 フィルタ変更時に自動でルート計算（AIモード時）
+if not manual_mode:
+    def run_auto_route_update(selected_names):
+        start_name = "出発地"
+        route_names = [start_name] + selected_names
+        if not route_names or len(route_names) < 2:
+            return
 
+        matrix = []
+        for from_name in route_names:
+            row = []
+            for to_name in route_names:
+                dist = 0 if from_name == to_name else int(calc_distance(from_name, to_name))
+                row.append(dist)
+            matrix.append(row)
+
+        manager = pywrapcp.RoutingIndexManager(len(matrix), 1, 0)
+        routing = pywrapcp.RoutingModel(manager)
+
+        def distance_callback(from_idx, to_idx):
+            return matrix[manager.IndexToNode(from_idx)][manager.IndexToNode(to_idx)]
+
+        transit_idx = routing.RegisterTransitCallback(distance_callback)
+        routing.SetArcCostEvaluatorOfAllVehicles(transit_idx)
+
+        search_params = pywrapcp.DefaultRoutingSearchParameters()
+        search_params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+        solution = routing.SolveWithParameters(search_params)
+
+        if not solution:
+            return
+
+        index = routing.Start(0)
+        ordered_route = []
+        while not routing.IsEnd(index):
+            ordered_route.append(route_names[manager.IndexToNode(index)])
+            index = solution.Value(routing.NextVar(index))
+        ordered_route.append(route_names[manager.IndexToNode(index)])
+
+        total = 0
+        for i in range(len(ordered_route) - 1):
+            total += calc_distance(ordered_route[i], ordered_route[i + 1])
+
+        st.session_state["last_route"] = ordered_route
+        st.session_state["last_total_distance"] = total
+        st.session_state["ordered_names"] = [name for name in ordered_route if name != start_name]
+
+    # 自動で更新（選択されている施設だけ）
+    if "school_check_states" not in st.session_state:
+        st.session_state["school_check_states"] = {name: True for name in filtered_locations}
+
+    selected_names = [name for name, state in st.session_state["school_check_states"].items() if state and name in filtered_locations]
+
+    if selected_names:
+        run_auto_route_update(selected_names)
+
+# === 地図描画 ===
+try:
+    if "last_route" not in st.session_state or not st.session_state["last_route"]:
+        pass
+    else:
+        valid_route = [place for place in st.session_state["last_route"] if coords.get(place)]
+        line_coords = [coords[place] for place in valid_route]
+
+        m = folium.Map(location=[35.0, 135.0], zoom_start=13)
+        m.fit_bounds(line_coords)
+
+        circled_numbers = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩','⑪','⑫','⑬','⑭','⑮']
+        for i, place in enumerate(valid_route):
+            lat, lon = coords[place]
+            number = circled_numbers[i] if i < len(circled_numbers) else str(i + 1)
+            address = locations.get(place, "")
+
+            if i == 0:
+                folium.Marker(
+                    location=(lat, lon),
+                    popup="出発地",
+                    icon=folium.Icon(color="green", icon="play")
+                ).add_to(m)
+
+            folium.Marker(
+                location=(lat, lon),
+                icon=folium.DivIcon(html=f"""
+                    <div style='display: flex; align-items: center; justify-content: center; 
+                                width: 32px; height: 32px; border-radius: 50%; background: white; 
+                                border: 2px solid red; color: red; font-size: 16pt; font-weight: bold;
+                                box-shadow: 0 0 4px #888;'>{number}</div>
+                """)
+            ).add_to(m)
+
+            folium.map.Marker(
+                [lat, lon],
+                icon=folium.DivIcon(html=f"""
+                    <div style='font-size: 12pt; color: black; 
+                                margin-left: 38px; width: 200px; word-wrap: break-word;
+                                text-shadow: -1px -1px 0 white, 1px -1px 0 white,
+                                            -1px 1px 0 white, 1px 1px 0 white;'>
+                        {place}<br>
+                        <span style='font-size:10pt; color: black;
+                                    text-shadow: -1px -1px 0 white, 1px -1px 0 white,
+                                                -1px 1px 0 white, 1px 1px 0 white;'>
+                            {address}
+                        </span>
+                    </div>
+                """)
+            ).add_to(m)
+
+        polyline = folium.PolyLine(line_coords, color='blue', weight=5)
+        polyline.add_to(m)
+
+        arrow = PolyLineTextPath(polyline, ' ➔ ', repeat=True, offset=7,
+                                 attributes={'font-size': '18px', 'color': 'red'})
+        m.add_child(arrow)
+
+        st_folium(m, height=600, width="90%")
+except Exception as e:
+    st.error("❌ 地図の表示に失敗しました。")
+    st.exception(e)
+
+# === 🚚 所要時間表示 ===
+per_stop_time_min = 5
+ordered_route = st.session_state.get("last_route", [])
+total = st.session_state.get("last_total_distance", None)
+
+if ordered_route and total is not None:
+    num_stops = len(ordered_route) - 2  # 出発地と戻り地を除く中間地点数
+
+    def estimate_time(kmh, total_distance_m, stops, stop_time_min):
+        travel_time_min = (total_distance_m / 1000) / kmh * 60
+        return round(travel_time_min + (stops * stop_time_min))
+
+    st.markdown("#### 🚚 平均速度ごとの予想所要時間（※各配達先での対応時間：5分）")
+    cols = st.columns(3)
+    for i, speed in enumerate([30, 40, 50]):
+        est_min = estimate_time(speed, total, num_stops, per_stop_time_min)
+
+        with cols[i]:
+            st.caption(f"{speed} km/h")  # 小さめのラベル
+            st.text(f"{est_min} 分")  # 大きめの数値と単位
+
+# === 訪問対象の選択 ===
 st.subheader("訪問対象を選択してください")
-all_selected = all(st.session_state["school_check_states"].values())
+all_selected = all(st.session_state.get("school_check_states", {}).values())
 toggle = st.button("✅ 全て選択" if not all_selected else "❌ 全て解除")
 if toggle:
     for name in st.session_state["school_check_states"]:
@@ -297,96 +390,6 @@ for i, name in enumerate(filtered_locations):
 if len(selected_names) == 0:
     st.warning("1つ以上の学校を選択してください")
     st.stop()
-
-# ルート変更後、AI最適化モードであれば自動最適化実行
-if not manual_mode:
-    run_auto_route_update(selected_names)
-
-# === 並び替え UI（手動モードのみ表示） ===
-if manual_mode:
-    st.subheader("訪問順を手動で変更（ドラッグ＆ドロップ）")
-    if "sortable_key" not in st.session_state:
-        st.session_state["sortable_key"] = "sortable_order_default"
-    sortable_key = st.session_state["sortable_key"]
-
-    if st.session_state.get("ordered_names") is None or set(st.session_state["ordered_names"]) != set(selected_names):
-        st.session_state["ordered_names"] = selected_names
-
-    ordered_names = sort_items(
-        st.session_state["ordered_names"],
-        direction="vertical",
-        key=sortable_key
-    )
-    st.session_state["ordered_names"] = ordered_names
-else:
-    st.write("\n")
-
-
-
-# === 距離計算 ===
-def calc_distance(p1, p2):
-    lat1, lon1 = coords[p1]
-    lat2, lon2 = coords[p2]
-    radius = 6371
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2)
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return radius * c * 1000
-
-# === AI最適化 ===
-if st.button("ルート更新"):
-    route_names = [start_name] + (selected_names if not manual_mode else st.session_state["ordered_names"])
-    
-    if not route_names or len(route_names) < 2:
-        st.warning("訪問先が不足しています")
-        st.stop()
-
-    if not manual_mode:
-        st.info("AIによるルート最適化を実行中...")
-        matrix = []
-        for from_name in route_names:
-            row = []
-            for to_name in route_names:
-                dist = 0 if from_name == to_name else int(calc_distance(from_name, to_name))
-                row.append(dist)
-            matrix.append(row)
-
-        manager = pywrapcp.RoutingIndexManager(len(matrix), 1, 0)
-        routing = pywrapcp.RoutingModel(manager)
-        def distance_callback(from_idx, to_idx):
-            return matrix[manager.IndexToNode(from_idx)][manager.IndexToNode(to_idx)]
-
-        transit_idx = routing.RegisterTransitCallback(distance_callback)
-        routing.SetArcCostEvaluatorOfAllVehicles(transit_idx)
-
-        search_params = pywrapcp.DefaultRoutingSearchParameters()
-        search_params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-        solution = routing.SolveWithParameters(search_params)
-
-        if solution:
-            index = routing.Start(0)
-            ordered_route = []
-            while not routing.IsEnd(index):
-                ordered_route.append(route_names[manager.IndexToNode(index)])
-                index = solution.Value(routing.NextVar(index))
-            ordered_route.append(route_names[manager.IndexToNode(index)])
-        else:
-            st.error("ルート最適化に失敗しました。")
-            st.stop()
-    else:
-        ordered_route = [start_name] + st.session_state["ordered_names"] + [start_name]
-
-    total = 0
-    for i in range(len(ordered_route) - 1):
-        total += calc_distance(ordered_route[i], ordered_route[i + 1])
-
-    st.session_state["last_route"] = ordered_route
-    st.session_state["last_total_distance"] = total
-    st.session_state["ordered_names"] = [name for name in ordered_route if name != start_name]
-
-    st.metric("総移動距離（概算）", f"{total / 1000:.2f} km")
-    st.rerun()
 
 # === 訪問順表示 ===
 if "last_route" in st.session_state:
@@ -409,99 +412,4 @@ if "last_route" in st.session_state:
 
         joined_html = " ➔ ".join(middle_html)
         st.markdown(joined_html, unsafe_allow_html=True)
-
         st.write(f"戻り地：{end}")
-    else:
-        st.write("訪問順データが不足しています。")
-
-
-# 各拠点での対応時間（分）
-per_stop_time_min = 5
-ordered_route = st.session_state.get("last_route", [])
-total = st.session_state.get("last_total_distance", None)
-
-if ordered_route and total is not None:
-    num_stops = len(ordered_route) - 2  # 出発地と戻り地を除く中間地点数
-
-    # 所要時間計算関数
-    def estimate_time(kmh, total_distance_m, stops, stop_time_min):
-        travel_time_min = (total_distance_m / 1000) / kmh * 60
-        return round(travel_time_min + (stops * stop_time_min))
-
-    # 横並び表示
-    st.markdown("#### 🚚 平均速度ごとの予想所要時間（※各配達先での対応時間 5分 を含みます）")
-    cols = st.columns(3)
-    for i, speed in enumerate([30, 40, 50]):
-        est_min = estimate_time(speed, total, num_stops, per_stop_time_min)
-        cols[i].metric(f"{speed} km/h", f"{est_min} 分")
-else:
-    st.warning("ルートが未計算です。")
-
-# === 地図描画 ===
-try:
-    if "last_route" not in st.session_state or not st.session_state["last_route"]:
-        st.warning("ルートに有効な地点がありませんでした。")
-    else:
-        valid_route = [place for place in st.session_state["last_route"] if coords.get(place)]
-        line_coords = [coords[place] for place in valid_route]
-
-        # 地図オブジェクト初期化（最初は任意の場所）
-        m = folium.Map(location=[35.0, 135.0], zoom_start=13)
-
-        # 地図を全地点にフィットさせる
-        m.fit_bounds(line_coords)
-
-        circled_numbers = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩','⑪','⑫','⑬','⑭','⑮']
-        for i, place in enumerate(valid_route):
-            lat, lon = coords[place]
-            number = circled_numbers[i] if i < len(circled_numbers) else str(i + 1)
-            address = locations.get(place, "")
-
-            # 出発地の場合のみ専用ピンを追加
-            if i == 0:
-                folium.Marker(
-                    location=(lat, lon),
-                    popup="出発地",
-                    icon=folium.Icon(color="green", icon="play")
-                ).add_to(m)
-
-            # 赤丸番号マーカー（共通：出発地含む）
-            folium.Marker(
-                location=(lat, lon),
-                icon=folium.DivIcon(html=f"""
-                    <div style="display: flex; align-items: center; justify-content: center; 
-                                width: 32px; height: 32px; border-radius: 50%; background: white; 
-                                border: 2px solid red; color: red; font-size: 16pt; font-weight: bold;
-                                box-shadow: 0 0 4px #888;">{number}</div>
-                """)
-            ).add_to(m)
-
-            # 住所と施設名のテキストラベル（赤丸の右横）
-            folium.map.Marker(
-                [lat, lon],
-                icon=folium.DivIcon(html=f"""
-                    <div style="font-size: 12pt; color: black; 
-                                margin-left: 38px; width: 200px; word-wrap: break-word;
-                                text-shadow: -1px -1px 0 white, 1px -1px 0 white,
-                                            -1px 1px 0 white, 1px 1px 0 white;">
-                        {place}<br>
-                        <span style="font-size:10pt; color: black;
-                                    text-shadow: -1px -1px 0 white, 1px -1px 0 white,
-                                                -1px 1px 0 white, 1px 1px 0 white;">
-                            {address}
-                        </span>
-                    </div>
-                """)
-            ).add_to(m)
-
-        polyline = folium.PolyLine(line_coords, color='blue', weight=5)
-        polyline.add_to(m)
-
-        arrow = PolyLineTextPath(polyline, ' ➔ ', repeat=True, offset=7,
-                                 attributes={'font-size': '18px', 'color': 'red'})
-        m.add_child(arrow)
-
-        st_folium(m, height=600, width=1000)
-except Exception as e:
-    st.error("❌ 地図の表示に失敗しました。")
-    st.exception(e)
