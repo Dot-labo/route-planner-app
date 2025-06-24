@@ -29,6 +29,15 @@ conn.commit()
 
 # === 管理画面と操作画面の切り替え　サイドバー ===
 page = st.sidebar.radio("表示切り替え", ["操作画面", "管理画面"])
+# ▼登録済みの配達日一覧（サイドバー下部）
+st.sidebar.markdown("### 📅 登録済みの配達日一覧")
+c.execute("CREATE TABLE IF NOT EXISTS delivery_dates (date TEXT PRIMARY KEY)")
+delivery_dates = [row[0] for row in c.execute("SELECT date FROM delivery_dates ORDER BY date DESC").fetchall()]
+if delivery_dates:
+    for d in delivery_dates:
+        st.sidebar.write(f"- {d}")
+else:
+    st.sidebar.write("（まだ登録されていません）")
 
 # === 管理画面 ===
 if page == "管理画面":
@@ -41,18 +50,18 @@ if page == "管理画面":
     if glug_file is not None:
         try:
             with st.spinner("CSVを読み込んでいます..."):
-                # 出発地を一時保存
+                # ▼出発地を一時保存
                 departure = c.execute("SELECT name, address, route FROM locations WHERE TRIM(name) = '出発地'").fetchone()
 
-                # 既存データ削除
+                # ▼既存施設データを削除
                 c.execute("DELETE FROM locations")
                 conn.commit()
 
-                # 出発地を戻す
+                # ▼出発地を戻す
                 if departure:
                     c.execute("INSERT INTO locations (name, address, route) VALUES (?, ?, ?)", departure)
 
-                # CSV読み込み
+                # ▼CSV読み込み（文字化けや不正な行も処理）
                 try:
                     df_glug = pd.read_csv(glug_file, header=None, skiprows=1, encoding='cp932', on_bad_lines='skip')
                 except Exception as e:
@@ -60,6 +69,14 @@ if page == "管理画面":
                     st.exception(e)
                     raise e
 
+                # ▼配達日（A列）の保存
+                delivery_dates = df_glug[0].dropna().unique()
+                c.execute("CREATE TABLE IF NOT EXISTS delivery_dates (date TEXT PRIMARY KEY)")
+                for d in delivery_dates:
+                    c.execute("INSERT OR IGNORE INTO delivery_dates (date) VALUES (?)", (str(d),))
+                conn.commit()
+
+                # ▼施設データ取込処理
                 imported_count = 0
                 for _, row in df_glug.iterrows():
                     name = str(row[2]).strip() if not pd.isna(row[2]) else ""
@@ -81,9 +98,22 @@ if page == "管理画面":
 
             st.success(f"{imported_count} 件の施設をインポートしました")
 
+            # ▼配達日を表示
+            st.markdown("#### 📅 このCSVに含まれる配達日：")
+            for d in delivery_dates:
+                st.write(f"・{d}")
+
         except Exception as e:
             st.error("GLUGインポート中にエラーが発生しました。")
             st.exception(e)
+
+    # ▼保存済みの配達日を常に表示（更新しても消えない）
+    c.execute("CREATE TABLE IF NOT EXISTS delivery_dates (date TEXT PRIMARY KEY)")
+    dates = [row[0] for row in c.execute("SELECT date FROM delivery_dates ORDER BY date DESC").fetchall()]
+    if dates:
+        st.markdown("#### 📅 登録済みの配達日一覧：")
+        for d in dates:
+            st.write(f"・{d}")
             
     st.subheader("📋 配送先の編集")
     with st.form("add_form"):

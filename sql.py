@@ -7,6 +7,7 @@ c = conn.cursor()
 # 既存テーブルがなければ作成（初回）
 c.execute("""
     CREATE TABLE IF NOT EXISTS locations (
+        date TEXT PRIMARY KEY
         name TEXT PRIMARY KEY,
         address TEXT NOT NULL,
         route TEXT
