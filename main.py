@@ -14,8 +14,8 @@ st.set_page_config(layout="wide")
 st.subheader("お弁当配送ルート最適化アプリ")
 
 # === SQLite データベース初期化 ===ローカルとデプロイ時で切り替え必要
-conn = sqlite3.connect("locations.db")
-#conn = sqlite3.connect("/mnt/data/locations.db")
+#conn = sqlite3.connect("locations.db")
+conn = sqlite3.connect("/mnt/data/locations.db")
 
 c = conn.cursor()
 c.execute("""
