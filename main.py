@@ -14,8 +14,8 @@ st.set_page_config(layout="wide")
 st.subheader("お弁当配送ルート最適化アプリ")
 
 # === SQLite データベース初期化 ===ローカルとデプロイ時で切り替え必要
-#conn = sqlite3.connect("locations.db")
-conn = sqlite3.connect("/mnt/data/locations.db")
+conn = sqlite3.connect("locations.db")
+#conn = sqlite3.connect("/mnt/data/locations.db")
 
 c = conn.cursor()
 c.execute("""
@@ -40,24 +40,46 @@ if page == "管理画面":
 
     if glug_file is not None:
         try:
-            df_glug = pd.read_csv(glug_file, header=None, skiprows=1, encoding='cp932')
-            imported_count = 0
-            for _, row in df_glug.iterrows():
-                name = str(row[2]).strip() if not pd.isna(row[2]) else ""
-                prefecture = str(row[6]).strip() if not pd.isna(row[6]) else ""
-                city = str(row[7]).strip() if not pd.isna(row[7]) else ""
-                address = str(row[8]).strip() if not pd.isna(row[8]) else ""
-                route = str(row[27]).strip() if not pd.isna(row[27]) else ""
-                full_address = f"{prefecture}{city}{address}"
+            with st.spinner("CSVを読み込んでいます..."):
+                # 出発地を一時保存
+                departure = c.execute("SELECT name, address, route FROM locations WHERE TRIM(name) = '出発地'").fetchone()
 
-                if name and full_address and name != "出発地":
-                    if selected_route == "全項目" or route == selected_route:
-                        c.execute("REPLACE INTO locations (name, address, route) VALUES (?, ?, ?)", (name, full_address, route))
-                        imported_count += 1
+                # 既存データ削除
+                c.execute("DELETE FROM locations")
+                conn.commit()
 
-            conn.commit()
+                # 出発地を戻す
+                if departure:
+                    c.execute("INSERT INTO locations (name, address, route) VALUES (?, ?, ?)", departure)
+
+                # CSV読み込み
+                try:
+                    df_glug = pd.read_csv(glug_file, header=None, skiprows=1, encoding='cp932', on_bad_lines='skip')
+                except Exception as e:
+                    st.error("CSVの読み込みに失敗しました。文字コードや形式を確認してください。")
+                    st.exception(e)
+                    raise e
+
+                imported_count = 0
+                for _, row in df_glug.iterrows():
+                    name = str(row[2]).strip() if not pd.isna(row[2]) else ""
+                    prefecture = str(row[6]).strip() if not pd.isna(row[6]) else ""
+                    city = str(row[7]).strip() if not pd.isna(row[7]) else ""
+                    address = str(row[8]).strip() if not pd.isna(row[8]) else ""
+                    route = str(row[27]).strip() if not pd.isna(row[27]) else ""
+                    full_address = f"{prefecture}{city}{address}"
+
+                    if name and full_address and name != "出発地":
+                        if selected_route == "全項目" or route == selected_route:
+                            c.execute(
+                                "REPLACE INTO locations (name, address, route) VALUES (?, ?, ?)",
+                                (name, full_address, route)
+                            )
+                            imported_count += 1
+
+                conn.commit()
+
             st.success(f"{imported_count} 件の施設をインポートしました")
-            st.rerun()
 
         except Exception as e:
             st.error("GLUGインポート中にエラーが発生しました。")
